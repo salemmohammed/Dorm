@@ -2,6 +2,121 @@ from pulp import *
 import random
 import time
 
+def dorm_allocate(resouce_capacity_g, jobs_g, job_demand_g, job_max_worker_g, job_min_worker_g, job_weight_g, fair_assignment_g, pre_assignment_g, theta1, theta2):
+    server_num   = len(resouce_capacity_g);
+    job_num      = len(jobs_g);
+    resource_num = 3;
+    servers      = range(server_num);
+    jobs         = jobs_g;
+    resources    = range(resource_num);
+    resources_total  = {};
+    job_demand       = job_demand_g; #[job][resource]
+    resouce_capacity = resouce_capacity_g; #[server][resource]
+    job_max_worker   = job_max_worker_g;
+    job_min_worker   = job_min_worker_g;
+    job_weight       = job_weight_g;
+    pre_assignment     = pre_assignment_g;
+    fair_assignment  = fair_assignment_g;
+
+    for i in resources:
+        resources_total[i] = sum(resouce_capacity[m][i] for m in servers);
+
+    start_time = time.time();
+
+    prob = LpProblem('cacluate_Dorm', LpMaximize)
+    #define main variables
+    assignment = LpVariable.dicts(name="assignment", indexs=(jobs, servers), lowBound=0, cat=LpInteger);
+    l = LpVariable.dicts(name="l", indexs=jobs, lowBound=0);
+    r = LpVariable.dicts(name="r", indexs=jobs, lowBound=0, upBound=1, cat=LpInteger);
+
+    #objective function
+    job_worker_num = {};
+    for i in jobs:
+        job_worker_num[i] = lpSum([assignment[i][j] for j in servers]);
+
+    job_resource_util = {};
+    for i in jobs:
+        job_resource_util[i] = [];
+        for j in resources:
+            job_resource_util[i].append(job_worker_num[i]*job_demand[i][j]*1.0/resources_total[j]);
+
+    cluster_resource_util = lpSum([job_resource_util[i][j] for i in jobs for j in resources]);
+
+    prob +=  cluster_resource_util - 0.1*lpSum([r[i] for i in jobs])/job_num;
+
+    #Constraint: Resource Capacity
+    for i in servers:
+        for j in resources:
+            prob += lpSum([job_demand[m][j]*assignment[m][i] for m in jobs]) <= resouce_capacity[i][j];
+
+    #Constrain: max worker number
+    for i in jobs:
+        prob += lpSum([assignment[i][n] for n in servers]) <= job_max_worker[i];
+
+    #Constrain: min worker number
+    for i in jobs:
+        prob += lpSum([assignment[i][n] for n in servers]) >= job_min_worker[i];
+
+    #Constraint: define l
+    for i in jobs:
+        prob += l[i] >= lpSum([assignment[i][j] for j in servers]) \
+        * max([1.0*job_demand[i][n]/resources_total[n] for n in resources]) \
+        - sum([fair_assignment[i][j] for j in servers]) \
+        * max([1.0*job_demand[i][n]/resources_total[n] for n in resources]);
+
+    for i in jobs:
+        prob += l[i] >= -lpSum([assignment[i][j] for j in servers]) \
+        * max([1.0*job_demand[i][n]/resources_total[n] for n in resources]) \
+        + sum([fair_assignment[i][j] for j in servers]) \
+        * max([1.0*job_demand[i][n]/resources_total[n] for n in resources]);
+
+    #Constraint: define r
+    for i in jobs:
+        for j in servers:
+            prob += 1000000*r[i] >= assignment[i][j] - pre_assignment[i][j];
+            prob += 1000000*r[i] >= -assignment[i][j] + pre_assignment[i][j];
+
+    #Constraint: l
+    job_fair_dominant_share = {};
+    for i in jobs:
+        job_fair_dominant_share[i] = sum([fair_assignment[i][j] for j in servers]) \
+            * max([1.0*job_demand[i][n]/resources_total[n] for n in resources]);
+    prob += lpSum([l[i] for i in jobs])/(resource_num*sum([job_fair_dominant_share[i] for i in jobs])) <= theta1;
+
+    #Constraint: r
+    prob += lpSum([r[i] for i in jobs])*1.0/job_num <= theta2;
+
+
+    solver = solvers.CPLEX_PY();
+    solver.epgap = 0.1;
+    # prob.solve(CPLEX());
+    solver.solve(prob);
+    # prob.solve(GLPK(options=['--mipgap', '0.02']));
+
+    assignment_re = {};
+    for i in jobs:
+        assignment_re[i]=[];
+        for j in servers:
+            assignment_re[i].append(int(value(assignment[i][j])));
+    print("--- %s seconds ---" % (time.time() - start_time));
+    print sum([value(l[i]) for i in jobs])/(resource_num*sum([job_fair_dominant_share[i] for i in jobs]));
+
+    # job_resource_util_val = {};
+    # for i in jobs:
+    #     job_resource_util_val[i] = [];
+    #     for j in resources:
+    #         job_resource_util_val[i].append(job_worker_num[i]*job_demand[i][j]*1.0/resources_total[j]);
+    # cluster_resource_util_val = lpSum([job_resource_util_val[i][j] for i in jobs for j in resources])
+    # print value(cluster_resource_util_val);
+
+    # for i in jobs:
+    #     print sum([assignment_re[i][j] for j in servers]),
+    # print ' ';
+    # for i in jobs:
+    #     print sum([fair_assignment[i][j] for j in servers]),
+
+    return assignment_re;
+
 def fair_allocate(method, resouce_capacity_g, jobs_g, job_demand_g, job_max_worker_g, job_min_worker_g, job_weight_g):
 
     server_num   = len(resouce_capacity_g);
@@ -140,7 +255,6 @@ def fair_allocate(method, resouce_capacity_g, jobs_g, job_demand_g, job_max_work
             known_job_sw[min_result_index] = min_result;
             del unknown_job_sw[min_result_index];
 
-            print min_result, '---', value(tau);
             job_info = {}
             for i in jobs:
                 tmp = int(sum([value(assignment[i][n]) for n in servers]));
@@ -163,14 +277,23 @@ def fair_allocate(method, resouce_capacity_g, jobs_g, job_demand_g, job_max_work
         print("--- %s seconds ---" % (time.time() - start_time));
         return assignment_re;
 
-random.seed(1);
+def cluster_utilization(resource_num, resources_total, jobs, job_demand, assignment):
+    job_worker_num = {};
+    for i in jobs:
+         job_worker_num[i] = sum(assignment[i]);
+    utilization = [];
+    for j in range(resource_num):
+        utilization.append(sum([1.0*job_worker_num[i]*job_demand[i][j]/resources_total[j] for i in jobs]));
+    return utilization;
 
-job_num      = 10;
+random.seed(1);
+job_num      = 50;
 jobs         = range(job_num);
 job_demand       = {}; #[job][resource]
 job_max_worker   = {};
 job_min_worker   = {};
 job_weight       = {};
+resources_total  = {};
 
 server_num   = 200;
 resource_num = 3;
@@ -192,7 +315,7 @@ for i in servers:
 #define job resource demand, max/min worker number and weight
 for i in jobs:
     job_max_worker[i] = random.randint(10,50);
-    job_min_worker[i] = random.randint(0,0);
+    job_min_worker[i] = random.randint(1,1);
     job_weight[i]     = random.randint(1,10);
     job_demand[i] = {};
     for j in resources:
@@ -203,6 +326,50 @@ for i in jobs:
         elif j==2:
             job_demand[i][j] = random.randint(1,1);  #GPU
 
-assignment = fair_allocate('huristic', resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight);
-for i in  jobs:
-    print sum(assignment[i]),
+for i in resources:
+    resources_total[i] = sum(resouce_capacity[m][i] for m in servers);
+
+fair_assignment = fair_allocate('huristic', resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight);
+
+pre_assignment = {};
+for i in jobs:
+    pre_assignment[i] = [];
+    for j in servers:
+        pre_assignment[i].append(0);
+
+dorm_assignment = dorm_allocate(resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight, fair_assignment, pre_assignment, 0.01, 1);
+
+########
+#a new job#
+########
+job_num      = 51;
+jobs         = range(job_num);
+job_demand[50] = {};
+job_demand[50][0] = 4;
+job_demand[50][1] = 10;
+job_demand[50][2] = 1;
+job_max_worker[50]= 30;
+job_min_worker[50]= 1;
+job_weight[50]    = 5;
+
+fair_assignment = fair_allocate('huristic', resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight);
+pre_assignment  = dorm_assignment;
+pre_assignment[50] = [int(0)]*server_num;
+dorm_assignment = dorm_allocate(resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight, fair_assignment, pre_assignment, 0.1, 0.2);
+
+for i in jobs:
+    print sum(pre_assignment[i]),
+print '';
+for i in jobs:
+    print sum(dorm_assignment[i]),
+print '';
+print sum(cluster_utilization(resource_num, resources_total, jobs, job_demand, dorm_assignment));
+print sum(cluster_utilization(resource_num, resources_total, jobs, job_demand, fair_assignment));
+
+adjust_job_num=0;
+for i in jobs:
+    for j in servers:
+        if abs(dorm_assignment[i][j] - pre_assignment[i][j]) > 0:
+            adjust_job_num = adjust_job_num + 1;
+            break;
+print adjust_job_num;
