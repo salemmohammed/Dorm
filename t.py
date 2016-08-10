@@ -1,6 +1,7 @@
 from pulp import *
 import random
 import time
+import Queue
 
 def dorm_allocate(resouce_capacity_g, jobs_g, job_demand_g, job_max_worker_g, job_min_worker_g, job_weight_g, fair_assignment_g, pre_assignment_g, theta1, theta2):
     server_num   = len(resouce_capacity_g);
@@ -15,7 +16,7 @@ def dorm_allocate(resouce_capacity_g, jobs_g, job_demand_g, job_max_worker_g, jo
     job_max_worker   = job_max_worker_g;
     job_min_worker   = job_min_worker_g;
     job_weight       = job_weight_g;
-    pre_assignment     = pre_assignment_g;
+    pre_assignment   = pre_assignment_g;
     fair_assignment  = fair_assignment_g;
 
     for i in resources:
@@ -94,26 +95,14 @@ def dorm_allocate(resouce_capacity_g, jobs_g, job_demand_g, job_max_worker_g, jo
     # prob.solve(GLPK(options=['--mipgap', '0.02']));
 
     assignment_re = {};
-    for i in jobs:
-        assignment_re[i]=[];
-        for j in servers:
-            assignment_re[i].append(int(value(assignment[i][j])));
+    if LpStatus[prob.status] != "Optimal":
+        assignment_re = pre_assignment;
+    else:
+        for i in jobs:
+            assignment_re[i]=[];
+            for j in servers:
+                assignment_re[i].append(int(value(assignment[i][j])));
     print("--- %s seconds ---" % (time.time() - start_time));
-    print sum([value(l[i]) for i in jobs])/(resource_num*sum([job_fair_dominant_share[i] for i in jobs]));
-
-    # job_resource_util_val = {};
-    # for i in jobs:
-    #     job_resource_util_val[i] = [];
-    #     for j in resources:
-    #         job_resource_util_val[i].append(job_worker_num[i]*job_demand[i][j]*1.0/resources_total[j]);
-    # cluster_resource_util_val = lpSum([job_resource_util_val[i][j] for i in jobs for j in resources])
-    # print value(cluster_resource_util_val);
-
-    # for i in jobs:
-    #     print sum([assignment_re[i][j] for j in servers]),
-    # print ' ';
-    # for i in jobs:
-    #     print sum([fair_assignment[i][j] for j in servers]),
 
     return assignment_re;
 
@@ -324,7 +313,9 @@ dorm_assignment  = {};
 history_util = [];
 history_job_allocate = [];
 
-for step in range(10):
+job_q = Queue.Queue();
+
+for step in range(5):
     job_id = job_id + 1;
     jobs.append(job_id);
     job_max_worker[job_id] = random.randint(10,50);
@@ -342,19 +333,33 @@ for step in range(10):
     pre_assignment[job_id] = [int(0)]*server_num;
     fair_assignment = fair_allocate('huristic', resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight);
     dorm_assignment = dorm_allocate(resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight, fair_assignment, pre_assignment, 0.2, 0.2);
+    if dorm_assignment == pre_assignment:
+        job_q.put(job_id);
+        jobs.remove(job_id);
 
     history_util.append(cluster_utilization(resource_num, resources_total, jobs, job_demand, dorm_assignment));
     history_job_allocate.append({});
     for i in jobs:
         history_job_allocate[step][i] = sum(dorm_assignment[i]);
 
+
+job_id = 0;
+for step in range(5,10):
+    job_id = job_id + 1;
+    jobs.remove(job_id);
+    pre_assignment = dorm_assignment;
+    del pre_assignment[job_id];
+    if len(jobs) > 0:
+        fair_assignment = fair_allocate('huristic', resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight);
+        dorm_assignment = dorm_allocate(resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight, fair_assignment, pre_assignment, 0.2, 0.2);
+    else:
+        dorm_assignment = pre_assignment;
+    history_util.append(cluster_utilization(resource_num, resources_total, jobs, job_demand, dorm_assignment));
+    history_job_allocate.append({});
+    for i in jobs:
+        history_job_allocate[step][i] = sum(dorm_assignment[i]);
+
+
 print history_job_allocate;
 print " ";
 print history_util;
-# adjust_job_num=0;
-# for i in jobs:
-#     for j in servers:
-#         if abs(dorm_assignment[i][j] - pre_assignment[i][j]) > 0:
-#             adjust_job_num = adjust_job_num + 1;
-#             break;
-# print adjust_job_num;
