@@ -84,7 +84,7 @@ def dorm_allocate(resouce_capacity_g, jobs_g, job_demand_g, job_max_worker_g, jo
     prob += lpSum([l[i] for i in jobs])/(resource_num*sum([job_fair_dominant_share[i] for i in jobs])) <= theta1;
 
     #Constraint: r
-    prob += lpSum([r[i] for i in jobs])*1.0/job_num <= theta2;
+    prob += lpSum([r[i] for i in jobs]) <= max(1, job_num*theta2);
 
 
     solver = solvers.CPLEX_PY();
@@ -286,20 +286,14 @@ def cluster_utilization(resource_num, resources_total, jobs, job_demand, assignm
         utilization.append(sum([1.0*job_worker_num[i]*job_demand[i][j]/resources_total[j] for i in jobs]));
     return utilization;
 
+################################################################################
 random.seed(1);
-job_num      = 50;
-jobs         = range(job_num);
-job_demand       = {}; #[job][resource]
-job_max_worker   = {};
-job_min_worker   = {};
-job_weight       = {};
-resources_total  = {};
-
 server_num   = 200;
 resource_num = 3;
 resources    = range(resource_num);
 servers      = range(server_num);
 resouce_capacity = {}; #[server][resource]
+resources_total  = {};
 
 #define resource capacity
 for i in servers:
@@ -312,64 +306,55 @@ for i in servers:
         elif j==2:
             resouce_capacity[i][j] = 4;
 
-#define job resource demand, max/min worker number and weight
-for i in jobs:
-    job_max_worker[i] = random.randint(10,50);
-    job_min_worker[i] = random.randint(1,1);
-    job_weight[i]     = random.randint(1,10);
-    job_demand[i] = {};
-    for j in resources:
-        if j==0:
-            job_demand[i][j] = random.randint(2,8);  #CPU
-        elif j==1:
-            job_demand[i][j] = random.randint(8,16); #RAM
-        elif j==2:
-            job_demand[i][j] = random.randint(1,1);  #GPU
-
 for i in resources:
     resources_total[i] = sum(resouce_capacity[m][i] for m in servers);
 
-fair_assignment = fair_allocate('huristic', resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight);
+################################################################################
+job_id       = 0;
+jobs         = [];
+job_demand       = {}; #[job][resource]
+job_max_worker   = {};
+job_min_worker   = {};
+job_weight       = {};
 
-pre_assignment = {};
-for i in jobs:
-    pre_assignment[i] = [];
-    for j in servers:
-        pre_assignment[i].append(0);
+fair_assignment  = {};
+pre_assignment   = {};
+dorm_assignment  = {};
 
-dorm_assignment = dorm_allocate(resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight, fair_assignment, pre_assignment, 0.01, 1);
+history_util = [];
+history_job_allocate = [];
 
-########
-#a new job#
-########
-job_num      = 51;
-jobs         = range(job_num);
-job_demand[50] = {};
-job_demand[50][0] = 4;
-job_demand[50][1] = 10;
-job_demand[50][2] = 1;
-job_max_worker[50]= 30;
-job_min_worker[50]= 1;
-job_weight[50]    = 5;
+for step in range(10):
+    job_id = job_id + 1;
+    jobs.append(job_id);
+    job_max_worker[job_id] = random.randint(10,50);
+    job_min_worker[job_id] = random.randint(1,1);
+    job_weight[job_id]     = random.randint(1,10);
+    job_demand[job_id]     = {};
+    for j in resources:
+        if j==0:
+            job_demand[job_id][j] = random.randint(2,8);  #CPU
+        elif j==1:
+            job_demand[job_id][j] = random.randint(8,16); #RAM
+        elif j==2:
+            job_demand[job_id][j] = random.randint(0,1);  #GPU
+    pre_assignment = dorm_assignment;
+    pre_assignment[job_id] = [int(0)]*server_num;
+    fair_assignment = fair_allocate('huristic', resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight);
+    dorm_assignment = dorm_allocate(resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight, fair_assignment, pre_assignment, 0.2, 0.2);
 
-fair_assignment = fair_allocate('huristic', resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight);
-pre_assignment  = dorm_assignment;
-pre_assignment[50] = [int(0)]*server_num;
-dorm_assignment = dorm_allocate(resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight, fair_assignment, pre_assignment, 0.1, 0.2);
+    history_util.append(cluster_utilization(resource_num, resources_total, jobs, job_demand, dorm_assignment));
+    history_job_allocate.append({});
+    for i in jobs:
+        history_job_allocate[step][i] = sum(dorm_assignment[i]);
 
-for i in jobs:
-    print sum(pre_assignment[i]),
-print '';
-for i in jobs:
-    print sum(dorm_assignment[i]),
-print '';
-print sum(cluster_utilization(resource_num, resources_total, jobs, job_demand, dorm_assignment));
-print sum(cluster_utilization(resource_num, resources_total, jobs, job_demand, fair_assignment));
-
-adjust_job_num=0;
-for i in jobs:
-    for j in servers:
-        if abs(dorm_assignment[i][j] - pre_assignment[i][j]) > 0:
-            adjust_job_num = adjust_job_num + 1;
-            break;
-print adjust_job_num;
+print history_job_allocate;
+print " ";
+print history_util;
+# adjust_job_num=0;
+# for i in jobs:
+#     for j in servers:
+#         if abs(dorm_assignment[i][j] - pre_assignment[i][j]) > 0:
+#             adjust_job_num = adjust_job_num + 1;
+#             break;
+# print adjust_job_num;
