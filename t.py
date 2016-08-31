@@ -2,14 +2,17 @@ from pulp import *
 import random
 import time
 import Queue
+import math
+import numpy
+from numpy import linalg as LA
 
 def dorm_allocate(resouce_capacity_g, jobs_g, job_demand_g, job_max_worker_g, job_min_worker_g, job_weight_g, fair_assignment_g, pre_assignment_g, theta1, theta2):
-    server_num   = len(resouce_capacity_g);
-    job_num      = len(jobs_g);
-    resource_num = 3;
-    servers      = range(server_num);
-    jobs         = jobs_g;
-    resources    = range(resource_num);
+    server_num       = len(resouce_capacity_g);
+    job_num          = len(jobs_g);
+    resource_num     = 3; #CPU GPU and ram
+    servers          = range(server_num);
+    jobs             = jobs_g;
+    resources        = range(resource_num);
     resources_total  = {};
     job_demand       = job_demand_g; #[job][resource]
     resouce_capacity = resouce_capacity_g; #[server][resource]
@@ -85,7 +88,7 @@ def dorm_allocate(resouce_capacity_g, jobs_g, job_demand_g, job_max_worker_g, jo
     prob += lpSum([l[i] for i in jobs])/(resource_num*sum([job_fair_dominant_share[i] for i in jobs])) <= theta1;
 
     #Constraint: r
-    prob += lpSum([r[i] for i in jobs]) <= max(1, job_num*theta2);
+    prob += lpSum([r[i] for i in jobs]) <= math.ceil(job_num*theta2);
 
 
     solver = solvers.CPLEX_PY();
@@ -102,7 +105,7 @@ def dorm_allocate(resouce_capacity_g, jobs_g, job_demand_g, job_max_worker_g, jo
             assignment_re[i]=[];
             for j in servers:
                 assignment_re[i].append(int(value(assignment[i][j])));
-    print("--- %s seconds ---" % (time.time() - start_time));
+    #print("--- %s seconds ---" % (time.time() - start_time));
 
     return assignment_re;
 
@@ -201,10 +204,6 @@ def fair_allocate(method, resouce_capacity_g, jobs_g, job_demand_g, job_max_work
             for i in jobs:
                 prob += lpSum([assignment[i][n] for n in servers]) <= job_max_worker[i];
 
-            #Constrain: min worker number
-            for i in jobs:
-                prob += lpSum([assignment[i][n] for n in servers]) >= job_min_worker[i];
-
             for i in known_job_sw.keys():
                 prob += (lpSum([assignment[i][n] for n in servers]) \
                         * max([1.0*job_demand[i][n]/resources_total[n] for n in resources]) \
@@ -263,7 +262,7 @@ def fair_allocate(method, resouce_capacity_g, jobs_g, job_demand_g, job_max_work
 
             if break_tag == True:
                 break;
-        print("--- %s seconds ---" % (time.time() - start_time));
+        #print("--- %s seconds ---" % (time.time() - start_time));
         return assignment_re;
 
 def cluster_utilization(resource_num, resources_total, jobs, job_demand, assignment):
@@ -277,7 +276,7 @@ def cluster_utilization(resource_num, resources_total, jobs, job_demand, assignm
 
 ################################################################################
 random.seed(1);
-server_num   = 200;
+server_num   = 100;
 resource_num = 3;
 resources    = range(resource_num);
 servers      = range(server_num);
@@ -315,10 +314,12 @@ history_job_allocate = [];
 
 job_q = Queue.Queue();
 
-for step in range(5):
+test_job_num = 60;
+
+for i in range(test_job_num):
     job_id = job_id + 1;
     jobs.append(job_id);
-    job_max_worker[job_id] = random.randint(10,50);
+    job_max_worker[job_id] = random.randint(10,200);
     job_min_worker[job_id] = random.randint(1,1);
     job_weight[job_id]     = random.randint(1,10);
     job_demand[job_id]     = {};
@@ -331,35 +332,78 @@ for step in range(5):
             job_demand[job_id][j] = random.randint(0,1);  #GPU
     pre_assignment = dorm_assignment;
     pre_assignment[job_id] = [int(0)]*server_num;
-    fair_assignment = fair_allocate('huristic', resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight);
-    dorm_assignment = dorm_allocate(resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight, fair_assignment, pre_assignment, 0.2, 0.2);
-    if dorm_assignment == pre_assignment:
-        job_q.put(job_id);
-        jobs.remove(job_id);
 
-    history_util.append(cluster_utilization(resource_num, resources_total, jobs, job_demand, dorm_assignment));
-    history_job_allocate.append({});
-    for i in jobs:
-        history_job_allocate[step][i] = sum(dorm_assignment[i]);
+start_time = time.time();
+fair_assignment_1 = fair_allocate('mip', resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight);
+print("--- %s seconds ---" % (time.time() - start_time));
 
+start_time = time.time();
+fair_assignment_2 = fair_allocate('huristic', resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight);
+print("--- %s seconds ---" % (time.time() - start_time));
 
-job_id = 0;
-for step in range(5,10):
-    job_id = job_id + 1;
-    jobs.remove(job_id);
-    pre_assignment = dorm_assignment;
-    del pre_assignment[job_id];
-    if len(jobs) > 0:
-        fair_assignment = fair_allocate('huristic', resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight);
-        dorm_assignment = dorm_allocate(resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight, fair_assignment, pre_assignment, 0.2, 0.2);
-    else:
-        dorm_assignment = pre_assignment;
-    history_util.append(cluster_utilization(resource_num, resources_total, jobs, job_demand, dorm_assignment));
-    history_job_allocate.append({});
-    for i in jobs:
-        history_job_allocate[step][i] = sum(dorm_assignment[i]);
+share_1 = {};
+share_2 = {};
+diff = 0;
+
+ttt = 0;
+for j in range(test_job_num):
+    ttt = ttt + 1;
+    share_1[ttt] = sum(fair_assignment_1[ttt]) * 1.0 * max(1.0*job_demand[ttt][i]/resources_total[i] for i in range(3));
+    share_2[ttt] = sum(fair_assignment_2[ttt]) * 1.0 * max(1.0*job_demand[ttt][i]/resources_total[i] for i in range(3));
+
+share_1 = numpy.array([share_1[i] for i in range(1, test_job_num+1)]);
+share_2 = numpy.array([share_2[i] for i in range(1, test_job_num+1)]);
+diff = share_1 - share_2;
+print LA.norm(diff, 1);
+print LA.norm(diff, 2);
+print LA.norm(diff, 1)/(3*LA.norm(share_1, 1));
 
 
-print history_job_allocate;
-print " ";
-print history_util;
+# for step in range(50):
+#     job_id = job_id + 1;
+#     jobs.append(job_id);
+#     job_max_worker[job_id] = random.randint(10,50);
+#     job_min_worker[job_id] = random.randint(1,1);
+#     job_weight[job_id]     = random.randint(1,10);
+#     job_demand[job_id]     = {};
+#     for j in resources:
+#         if j==0:
+#             job_demand[job_id][j] = random.randint(2,8);  #CPU
+#         elif j==1:
+#             job_demand[job_id][j] = random.randint(8,16); #RAM
+#         elif j==2:
+#             job_demand[job_id][j] = random.randint(0,1);  #GPU
+#     pre_assignment = dorm_assignment;
+#     pre_assignment[job_id] = [int(0)]*server_num;
+#     fair_assignment = fair_allocate('mip', resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight);
+#     dorm_assignment = dorm_allocate(resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight, fair_assignment, pre_assignment, 0.2, 0.2);
+#     if dorm_assignment == pre_assignment:
+#         job_q.put(job_id);
+#         jobs.remove(job_id);
+#
+#     history_util.append(cluster_utilization(resource_num, resources_total, jobs, job_demand, dorm_assignment));
+#     history_job_allocate.append({});
+#     for i in jobs:
+#         history_job_allocate[step][i] = sum(dorm_assignment[i]);
+
+
+# job_id = 0;
+# for step in range(5,10):
+#     job_id = job_id + 1;
+#     jobs.remove(job_id);
+#     pre_assignment = dorm_assignment;
+#     del pre_assignment[job_id];
+#     if len(jobs) > 0:
+#         fair_assignment = fair_allocate('huristic', resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight);
+#         dorm_assignment = dorm_allocate(resouce_capacity, jobs, job_demand, job_max_worker, job_min_worker, job_weight, fair_assignment, pre_assignment, 0.2, 0.2);
+#     else:
+#         dorm_assignment = pre_assignment;
+#     history_util.append(cluster_utilization(resource_num, resources_total, jobs, job_demand, dorm_assignment));
+#     history_job_allocate.append({});
+#     for i in jobs:
+#         history_job_allocate[step][i] = sum(dorm_assignment[i]);
+
+#
+# print history_job_allocate;
+# print " ";
+# print history_util;
